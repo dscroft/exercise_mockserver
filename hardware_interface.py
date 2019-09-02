@@ -10,6 +10,9 @@ class StreamHandler( websocket.WebSocketHandler ):
 	""" Keep track of connected/disconnected websockets """
 	cl = {}
 
+	def check_origin(self, origin):
+		return True
+
 	def open( self, *args ):
 		print( "open connection" )
 		uri = self.request.uri
@@ -48,7 +51,17 @@ class StreamHandler( websocket.WebSocketHandler ):
 
 		return __class__.__send( b, path )
 
-class RepHandler( web.RequestHandler ):
+class BaseHandler( web.RequestHandler ):
+	def set_default_headers(self):
+		self.set_header("Access-Control-Allow-Origin", "*")
+		self.set_header("Access-Control-Allow-Headers", "*")
+		self.set_header('Access-Control-Allow-Methods', "PUT, GET, OPTIONS")
+
+	def options(self):
+		self.set_status(204)
+		self.finish()
+
+class RepHandler( BaseHandler ):
 	reps = 0
 	repstate = "low"
 
@@ -57,7 +70,7 @@ class RepHandler( web.RequestHandler ):
 
 	def put(self):
 		try: 
-			value = int( json.loads(self.request.body)["value"] )
+			value = int( json.loads(self.request.body.decode('utf-8'))["value"] )
 			__class__.reps = value
 		except:
 			self.set_status(400)
@@ -73,7 +86,7 @@ class RepHandler( web.RequestHandler ):
 		elif __class__.repstate == "high" and position < 10000:
 			__class__.repstate = "low"
 
-class ProgrammeHandler( web.RequestHandler ):
+class ProgrammeHandler( BaseHandler ):
 	__options = ("aaa", "bbb", "ccc")
 	__value = "aaa"
 
@@ -83,7 +96,7 @@ class ProgrammeHandler( web.RequestHandler ):
 
 	def put(self):
 		try:
-			value = json.loads(self.request.body)["value"]
+			value = json.loads(self.request.body.decode('utf-8'))["value"]
 			if value not in __class__.__options:
 				raise
 			__class__.__value = value
@@ -92,13 +105,13 @@ class ProgrammeHandler( web.RequestHandler ):
 
 		self.get()
 
-class BasicLoadHandler( web.RequestHandler ):
+class BasicLoadHandler( BaseHandler ):
 	__value = 0
 
 	def get(self):
 		self.write( {"value": __class__.__value} )
 
-class VariableLoadHandler( web.RequestHandler ):
+class VariableLoadHandler( BaseHandler ):
 	__value = 0
 
 	def get(self):
@@ -106,7 +119,7 @@ class VariableLoadHandler( web.RequestHandler ):
 
 	def put(self):
 		try:
-			value = json.loads(self.request.body)["value"]
+			value = json.loads(self.request.body.decode('utf-8'))["value"]
 			if value not in __class__.__options:
 				raise
 			__class__.__value = value
@@ -115,7 +128,7 @@ class VariableLoadHandler( web.RequestHandler ):
 
 		self.get()
 
-class GainHandler( web.RequestHandler ):
+class GainHandler( BaseHandler ):
 	__value = 0
 
 	def get(self):
@@ -123,7 +136,7 @@ class GainHandler( web.RequestHandler ):
 
 	def put(self):
 		try:
-			value = json.loads(self.request.body)["value"]
+			value = json.loads(self.request.body.decode('utf-8'))["value"]
 			if value not in __class__.__options:
 				raise
 			__class__.__value = value
@@ -141,7 +154,7 @@ def main( data ):
 	prev = datetime.datetime.now()
 	while True:
 		now = datetime.datetime.now()
-		if (now-prev).total_seconds() < 0.0005:	# send frame every 5ms
+		if (now-prev).total_seconds() < 0.005:	# send frame every 5ms
 			yield
 			continue
 
