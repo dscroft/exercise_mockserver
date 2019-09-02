@@ -121,6 +121,17 @@ class GainHandler( web.RequestHandler ):
 	def get(self):
 		self.write( {"value": __class__.__value} )
 
+	def put(self):
+		try:
+			value = json.loads(self.request.body)["value"]
+			if value not in __class__.__options:
+				raise
+			__class__.__value = value
+		except:
+			self.set_status(400)
+
+		self.get()		
+
 @gen.coroutine
 def main( data ):
 	""" Websocket publish loop 
