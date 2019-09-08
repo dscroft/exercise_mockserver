@@ -5,51 +5,10 @@ import json
 import time, random
 import csv, struct
 import datetime
+import serial
 
-class StreamHandler( websocket.WebSocketHandler ):
-	""" Keep track of connected/disconnected websockets """
-	cl = {}
-
-	def check_origin(self, origin):
-		return True
-
-	def open( self, *args ):
-		print( "open connection" )
-		uri = self.request.uri
-		if uri not in __class__.cl:
-			__class__.cl[uri] = set()
-
-		__class__.cl[uri].add(self)
-
-	def on_close( self ):
-		if self in __class__.cl:
-			__class__.cl.remove(self)
-
-	@staticmethod
-	def __send( message, path ):
-		if path not in __class__.cl: return 0
-
-		for client in __class__.cl[path]:
-			try:
-				client.write_message( message )
-			except:
-				pass
-
-		return len(__class__.cl[path])
-
-	@staticmethod
-	def send_message( data, path ):
-		""" Send message as JSON """
-		j = json.dumps( data )
-		return __class__.__send( j, path )
-
-	@staticmethod
-	def send_binary( data, path ):
-		ordered = sorted(data.items(), key=lambda i: i[0])
-		fmt = "".join([ {int: "i", float: "f"}[type(i[1])] for i in ordered ])
-		b = struct.pack( fmt, *[ i[1] for i in ordered ] )
-
-		return __class__.__send( b, path )
+from ws_handler import StreamHandler
+from basic_handler import BasicValueHandler
 
 class BaseHandler( web.RequestHandler ):
 	def set_default_headers(self):
@@ -128,85 +87,80 @@ class VariableLoadHandler( BaseHandler ):
 
 		self.get()
 
-class GainHandler( BaseHandler ):
-	__value = 0
+class SerialHandler:
+	def __init__(self, port, baudrate=9800):
+		self.__serial = serial.Serial( port=port, baudrate=baudrate )
+		self.__buffer = ''
 
-	def get(self):
-		self.write( {"value": __class__.__value} )
+	def poll(self):
+		availBytes = self.__serial.inWaiting()
 
-	def put(self):
-		try:
-			value = json.loads(self.request.body.decode('utf-8'))["value"]
-			if value not in __class__.__options:
-				raise
-			__class__.__value = value
-		except:
-			self.set_status(400)
+		if availBytes > 0:
+			self.__buffer += self.__serial.read( availBytes ).decode()
 
-		self.get()		
+			messages = self.__buffer.split('\n')
+
+			if self.__buffer == '' or self.__buffer[-1] == '\n':
+				self.__buffer = ''
+			else:
+				self.__buffer = messages[-1]
+				messages = messages[:-1]
+
+			return [ i[1:] for i in messages if i!='' and i[0] == '>' ]
+
+		return []
+
 
 @gen.coroutine
-def main( data ):
+def main():
 	""" Websocket publish loop 
 		Would be reading from CAN and serial normally """
-	row = 0
-	repstate = "low"
-	prev = datetime.datetime.now()
-	while True:
-		now = datetime.datetime.now()
-		if (now-prev).total_seconds() < 0.005:	# send frame every 5ms
-			yield
-			continue
+	sh = SerialHandler( "/dev/ttyACM0" )
 
-		values = data[row]
-		can = filter_values( values, "can" )
-		serial = filter_values( values, "serial" )
-
-		RepHandler.poll( serial["position"] )
-
-		StreamHandler.send_message( can, "/can/json" )
-		StreamHandler.send_message( serial, "/serial/json" )
-		StreamHandler.send_binary( can, "/can/bin" )
-		StreamHandler.send_binary( serial, "/serial/bin" )
-
-		prev = now
-		row = (row+1)%len(data)
-
-def filter_values( values, condition ):
-	return { key[1]: val for key, val in values.items() if key[0] in (None,condition) }
-
-def load_example_data( filename ):
-	""" Load in the example data from the .csv file
-		File should be one frame per row, first row is column headers. """
 	def auto_convert( val ):
 		try: return int(val)
 		except ValueError: pass
 		return float(val)
 
-	data = []
+	while True:
+		serialheaders = ('position','force','acceleration','velocity',\
+						'repetitions','travel','coil force',\
+						'calibration force','power','energy',\
+						'kCal','active')
+		canheaders = ('voltage','current','temperature','errors',\
+					  'force','relay status','12v status')
 
-	with open( filename, "r" ) as f:
-		for row in csv.DictReader( f ):
-			row = { tuple(([None]+key.split("|"))[-2:]): auto_convert(val) 
-					for key, val in row.items() }
-			data.append(row)
+		for message in sh.poll():
+			fields = message.split(',')
+			if len(fields) != len(serialheaders)+len(canheaders):
+				continue
 
-	return data
+			serialmessage = { k: auto_convert(v) 
+							  for k, v in zip(serialheaders, fields[:len(serialheaders)]) }
+			canmessage = { k: auto_convert(v) 
+						   for k, v in zip(canheaders, fields[-len(canheaders):]) }
+
+			RepHandler.reps = serialmessage["repetitions"]
+
+			StreamHandler.send_message( serialmessage, "/serial/json" )
+			StreamHandler.send_message( canmessage, "/can/json" )
+
+		yield			
 
 if __name__ == '__main__':
 	print( "Loading" )
-	data = load_example_data( "data.csv" )
+
 
 	print( "Running" )
-	app = web.Application( ( (r"/(can|serial)/(json|bin)", StreamHandler), \
+	app = web.Application( ( (r"/(can|serial)/json", StreamHandler), \
 							 (r"/reps", RepHandler), \
 							 (r"/programme", ProgrammeHandler), \
 							 (r"/load/basic", BasicLoadHandler), \
 							 (r"/load/variable", VariableLoadHandler), \
-							 (r"/gain", GainHandler) ), debug=True )
+							 (r"/gain", BasicValueHandler) ), debug=True )
 	app.listen(5001)
 
 	loop = ioloop.IOLoop.instance()
-	loop.spawn_callback( main, data )
+	loop.spawn_callback( main )
 	loop.start()
 
